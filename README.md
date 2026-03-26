@@ -48,8 +48,8 @@ git clone https://github.com/hongjunli256/tinyRenderer.git
 - 左：Color Buffer (正常渲染图)
 - 中：Toon Buffer (卡通非-phong 着色)
 - 右：Z-Buffer (深度映射，越近越亮)
-![效果展示](image/卡通显示原理.jpg)
-![效果展示](image/阴影合成原理.jpg)
+![效果展示](image/卡通显示原理.png)
+![效果展示](image/阴影合成原理.png)
 
 📝 亮点优化
  
