@@ -1,6 +1,6 @@
 # 编辑器/IDE 配置
-.vs
-.vscode
+.vs/
+.vscode/
 
 # 编译输出目录
 Debug/
@@ -25,4 +25,3 @@ output/
 
 # 其他
 imgui.ini
-tinyrenderer/
