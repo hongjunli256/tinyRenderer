@@ -2,6 +2,7 @@
 #include"model.h"
 constexpr int width_obj = 800;
 constexpr int height_obj = 800;
+//const double PI = 3.1415926535;
 //constexpr int width_obj_shadow = 2048;
 //constexpr int height_obj_shadow = 2048;
 

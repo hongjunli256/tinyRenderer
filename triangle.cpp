@@ -5,6 +5,7 @@
 //反正现在我是一定会做阴影的不如直接提前渲染出两个zbuffer顺便为以后优化ssao为3D做准备4.4---计划在PBR和IBL之后
 //我现在还先把三个全局矩阵给处理了得了，免得以后越堆越多，PBR暂缓，看明天上完课还有没有时间写一下初步的PBR4.4√
 //目前已知缺陷非3Dssao,然后阴影的处理变换大小暂时和原窗口一样大实际上这个不合理，但是这些都影响不大我都放在以后做4.4---投资未来
+//终于解决了PBR的bug了4.5√
 class GlobalMat
 {
 private:
@@ -96,6 +97,137 @@ public:
     }
 private:
 
+};
+struct PBRShader {
+private:
+    const Model& model;
+    vec4 l;
+    //const double PI = 3.1415926535;
+
+    vec3 mix(const vec3& a, const vec3& b, double t) const {
+        return a * (1.0 - t) + b * t;
+    }
+
+    vec3 fresnel(const vec3& F0, double cosTheta) const {
+        return F0 + (vec3{ 1.0,1.0,1.0 } - F0) * pow(1.0 - cosTheta, 5.0);
+    }
+
+    double D_GGX(double NdotH, double roughness) const {
+        double a = roughness * roughness;
+        double a2 = a * a;
+        double NdotH2 = NdotH * NdotH;
+        double denom = NdotH2 * (a2 - 1.0) + 1.0;
+        return a2 / (M_PI * denom * denom);
+    }
+
+    double G_Schlick(double NdotV, double roughness) const {
+        double r = roughness + 1.0;
+        double k = (r * r) / 8.0;
+        return NdotV / (NdotV * (1.0 - k) + k);
+    }
+
+    double G_Smith(double NdotV, double NdotL, double roughness) const {
+        return G_Schlick(NdotV, roughness) * G_Schlick(NdotL, roughness);
+    }
+
+public:
+    PBRShader(const vec3& light, const Model& m, const GlobalMat& gloMat) : model(m) {
+        l = normalized(gloMat.persp(vec4{ light.x, light.y, light.z, 0.0 }));
+    }
+
+    TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& modelView_invert_transpose) const {
+        mat<2, 4> E = { tri.dot[1] - tri.dot[0], tri.dot[2] - tri.dot[0] };
+        //mat<2, 2> U = { tri.dot[1] - tri.dot[0], tri.uv[1] - tri.uv[0] };
+        mat<2, 2> U = { tri.uv[1] - tri.uv[0], tri.uv[2] - tri.uv[0] };
+        mat<2, 4> T = U.invert() * E;
+
+        vec4 t0 = normalized(T[0]);
+        vec4 t1 = normalized(T[1]);
+        vec4 n_t = normalized(modelView_invert_transpose * tri.norm_gravity(bar[0], bar[1], bar[2]));
+        mat<4, 4> D_mat = { t0, t1, n_t, vec4{0,0,0,1} };
+
+        vec2 uv = tri.uv_gravity(bar[0], bar[1], bar[2]);
+        vec4 N = normalized(D_mat.transpose() * model.normal(uv));
+        vec4 V = { 0.0, 0.0, 1.0, 0.0 };
+        vec4 L = l;
+        vec4 H = normalized(V + L);
+
+        TGAColor dif = model.diffuse(uv);
+        TGAColor sp = model.specular(uv);
+
+        vec3 albedo = {
+            dif[2] / 255.0,
+            dif[1] / 255.0,
+            dif[0] / 255.0
+        };
+
+        // ============================
+        // 当前运行：简化版（适配旧贴图）
+        // ============================
+        double roughness = 1.0 - std::max(sp[2] / 255.0, 0.0);
+        double metallic = sp[1] / 255.0;
+
+        // ==============================================================================================
+        // 【正确标准PBR代码 —— 已注释】
+        // 原因：你没有标准 PBR 金属/粗糙度贴图，强行开启会发白、发绿、出现异常高光
+        // ==============================================================================================
+        /*
+        double metallic = metallicMap.r;          // 必须有：标准金属度贴图
+        double roughness = roughnessMap.g;        // 必须有：标准粗糙度贴图
+        roughness = std::max(roughness, 0.05);
+        */
+
+        double NdotV = std::max(N * V, 0.001);
+        double NdotL = std::max(N * L, 0.001);
+        double NdotH = std::max(N * H, 0.001);
+        double HdotV = std::max(H * V, 0.001);
+
+        vec3 F0 = { 0.04, 0.04, 0.04 };
+
+        // ==============================================================================================
+        // 【正确标准PBR代码 —— 已注释】
+        // 原因：无金属贴图 → 开启后F0错误 → 颜色爆炸、发绿、发白
+        // ==============================================================================================
+        /*
+        F0 = mix(F0, albedo, metallic);
+        */
+
+        vec3 F = fresnel(F0, HdotV);
+
+        double D = D_GGX(NdotH, roughness);
+        double G = G_Smith(NdotV, NdotL, roughness);
+        vec3 specular = (F * D * G) / (4.0 * NdotV * NdotL + 0.3);
+        specular = {
+            std::min(specular.x, 1.0),
+            std::min(specular.y, 1.0),
+            std::min(specular.z, 1.0)
+        };
+
+        double Ks = (F.x + F.y + F.z) / 3.0;
+
+        // ============================
+        // 当前运行：简化能量守恒
+        // ============================
+        double Kd = 1.0 - Ks;
+
+        // ==============================================================================================
+        // 【正确标准PBR代码 —— 已注释】
+        // 原因：无金属贴图 → 开启后能量计算错误 → 白点、溢色、全黑
+        // ==============================================================================================
+        /*
+        double Kd = (1.0 - Ks) * (1.0 - metallic);
+        */
+
+        vec3 diffuse = albedo * (Kd / M_PI);
+        vec3 finalRGB = (diffuse + specular) * NdotL * 5.5;
+
+        TGAColor res;
+        res[2] = (uint8_t)std::min(std::max(finalRGB.x * 255.0, 0.0), 255.0);
+        res[1] = (uint8_t)std::min(std::max(finalRGB.y * 255.0, 0.0), 255.0);
+        res[0] = (uint8_t)std::min(std::max(finalRGB.z * 255.0, 0.0), 255.0);
+        res[3] = 255;
+        return res;
+    }
 };
 struct PhongShader {
 private:
@@ -295,7 +427,8 @@ void draw_shadow_zbuffer(triangle& tri,std::vector<double>& zbuffer_true, int wi
     }
 }
 
-void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
+//void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
+void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
 {
 
     vec4 ndc[3] = { tri.dot[0] / tri.dot[0].w, tri.dot[1] / tri.dot[1].w, tri.dot[2] / tri.dot[2].w };
@@ -413,7 +546,8 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
     glomat.viewport(width_obj/16, height_obj/16, width_obj*7/8, height_obj*7/8);
     mat<4, 4> modelview_invert_transpose = glomat.modelview_invert_transpose();//ModelView.invert_transpose();
     
-    PhongShader shader(setting.light_vec,model,glomat);
+    //PhongShader shader(setting.light_vec,model,glomat);
+    PBRShader shader(setting.light_vec, model, glomat);
     ToonShader toonShader(orange, setting.light_vec, model,glomat);
     //我们需要提前zbuffer让SSAO可以正确计算AO系数
     for (int i = 0; i < model.nfaces(); i++)
