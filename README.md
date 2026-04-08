@@ -49,8 +49,8 @@ git clone https://github.com/hongjunli256/tinyRenderer.git
 - 左：Color Buffer (PBR/Phong 真实感渲染 + SSAO + 阴影)
 - 中：Toon Buffer (卡通着色 + 轮廓描边)
 - 右：Z-Buffer (深度映射，越近越亮)
-![效果展示](image/卡通显示原理.png)
-![效果展示](image/阴影合成原理.png)
+![效果展示](image/卡通合成.png)
+![效果展示](image/阴影合成.png)
 
 📝 亮点优化
 - 零拷贝渲染：复用缓冲区，避免每次重渲染都申请内存
