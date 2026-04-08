@@ -99,6 +99,7 @@ static GLuint texture_from_tga(const TGAImage& img) {
             }
         }
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, gray.data());
+        
     }
     return tex;
 }

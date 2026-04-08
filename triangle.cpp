@@ -6,6 +6,7 @@
 //我现在还先把三个全局矩阵给处理了得了，免得以后越堆越多，PBR暂缓，看明天上完课还有没有时间写一下初步的PBR4.4√
 //目前已知缺陷非3Dssao,然后阴影的处理变换大小暂时和原窗口一样大实际上这个不合理，但是这些都影响不大我都放在以后做4.4---投资未来
 //终于解决了PBR的bug了4.5√
+//优化优化代码，周末对IBL展开写
 class GlobalMat
 {
 private:
@@ -109,7 +110,12 @@ private:
     }
 
     vec3 fresnel(const vec3& F0, double cosTheta) const {
-        return F0 + (vec3{ 1.0,1.0,1.0 } - F0) * pow(1.0 - cosTheta, 5.0);
+        float a = 1.0 - cosTheta;
+        float a2 = a * a;
+        float a4 = a2 * a2;
+        float a5 = a4 * a;
+        //return F0 + (vec3{ 1.0,1.0,1.0 } - F0) * pow(1.0 - cosTheta, 5.0);
+        return F0 + (vec3{ 1.0,1.0,1.0 } - F0) * a5;
     }
 
     double D_GGX(double NdotH, double roughness) const {
@@ -135,11 +141,10 @@ public:
         l = normalized(gloMat.persp(vec4{ light.x, light.y, light.z, 0.0 }));
     }
 
-    TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& modelView_invert_transpose) const {
-        mat<2, 4> E = { tri.dot[1] - tri.dot[0], tri.dot[2] - tri.dot[0] };
-        //mat<2, 2> U = { tri.dot[1] - tri.dot[0], tri.uv[1] - tri.uv[0] };
-        mat<2, 2> U = { tri.uv[1] - tri.uv[0], tri.uv[2] - tri.uv[0] };
-        mat<2, 4> T = U.invert() * E;
+    TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& modelView_invert_transpose,mat<2,4>&T) const {
+        //mat<2, 4> E = { tri.dot[1] - tri.dot[0], tri.dot[2] - tri.dot[0] };
+        //mat<2, 2> U = { tri.uv[1] - tri.uv[0], tri.uv[2] - tri.uv[0] };
+        //mat<2, 4> T = U.invert() * E;
 
         vec4 t0 = normalized(T[0]);
         vec4 t1 = normalized(T[1]);
@@ -238,10 +243,10 @@ public:
         l = normalized((gloMat.persp(vec4{ light.x, light.y, light.z, 0. })));
     }
 
-    TGAColor color(triangle& tri, const vec3 bar, mat<4, 4>modelView_invert_transpose) const {
-        mat<2, 4>E = { tri.dot[1] - tri.dot[0],tri.dot[2] - tri.dot[0] };
-        mat<2, 2>U = { tri.uv[1] - tri.uv[0],tri.uv[2] - tri.uv[0] };
-        mat<2, 4>T = U.invert() * E;
+    TGAColor color(triangle& tri, const vec3 bar, mat<4, 4>modelView_invert_transpose, mat<2, 4>&T) const {
+        //mat<2, 4>E = { tri.dot[1] - tri.dot[0],tri.dot[2] - tri.dot[0] };
+        //mat<2, 2>U = { tri.uv[1] - tri.uv[0],tri.uv[2] - tri.uv[0] };
+        //mat<2, 4>T = U.invert() * E;
         vec4 t0 = normalized(T[0]);
         vec4 t1 = normalized(T[1]);
         vec4 n_t = normalized((modelView_invert_transpose * tri.norm_gravity(bar[0], bar[1], bar[2])));
@@ -400,6 +405,7 @@ void draw_shadow_zbuffer(triangle& tri,std::vector<double>& zbuffer_true, int wi
     int de0y = (bx - ax);
     int de1y = (cx - bx);
     int de2y = (ax - cx);
+
 #pragma omp parallel for private(ce0, ce1, ce2)
     for (int j = 0; j < h; j++) {
         int ce0 = e0 + de0y * j;
@@ -469,6 +475,10 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
     int de0y = (bx - ax);
     int de1y = (cx - bx);
     int de2y = (ax - cx);
+
+    mat<2, 4> E = { tri.dot[1] - tri.dot[0], tri.dot[2] - tri.dot[0] };
+    mat<2, 2> U = { tri.uv[1] - tri.uv[0], tri.uv[2] - tri.uv[0] };
+    mat<2, 4> T = U.invert() * E;
 #pragma omp parallel for private(ce0, ce1, ce2)
     for (int j = 0; j < h; j++) {
         int ce0 = e0 + de0y * j;
@@ -496,7 +506,7 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
                     vec3 pixel_nor = { raw_n4.x, raw_n4.y, raw_n4.z };
                     pixel_nor = normalized(pixel_nor);
 
-                    TGAColor color_more_real = shader1.color(tri, bar, model_);
+                    TGAColor color_more_real = shader1.color(tri, bar, model_,T);
 
                     float ao = ssaoShader.AO(width, height, px, py, pixel_nor, zbuffer_true, z);
                     color_more_real[0] = std::min(255, (int)(color_more_real[0] * ao));
@@ -504,8 +514,8 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
                     color_more_real[2] = std::min(255, (int)(color_more_real[2] * ao));
                     TGAColor color_more_real_toon = shader2.color(tri, bar, model_);
 
-                    framebuffer.set(bbminx + i, bbminy + j, color_more_real);
-                    framebuffer_toon.set(bbminx + i, bbminy + j, color_more_real_toon);
+                    framebuffer.set(px, py, color_more_real);
+                    framebuffer_toon.set(px, py, color_more_real_toon);
                     zbuffer_true[idx] = z;
                  }
             }
@@ -602,13 +612,14 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
 
     ////基于z的简单边缘检测
     constexpr double threshold = .15;
+    constexpr int Gx[3][3] = { {-1,  0,  1}, {-2, 0, 2}, {-1, 0, 1} };
+    constexpr int Gy[3][3] = { {-1, -2, -1}, { 0, 0, 0}, { 1, 2, 1} };
     for (int y = 1; y < framebuffer.height() - 1; ++y) {
         for (int x = 1; x < framebuffer.width() - 1; ++x) {
             vec2 sum;
             for (int j = -1; j <= 1; ++j) {
                 for (int i = -1; i <= 1; ++i) {
-                    constexpr int Gx[3][3] = { {-1,  0,  1}, {-2, 0, 2}, {-1, 0, 1} };
-                    constexpr int Gy[3][3] = { {-1, -2, -1}, { 0, 0, 0}, { 1, 2, 1} };
+
                     sum = sum + vec2{
                         Gx[j + 1][i + 1] * zbuffer_true[x + i + (y + j) * width_obj],
                         Gy[j + 1][i + 1] * zbuffer_true[x + i + (y + j) * width_obj]
