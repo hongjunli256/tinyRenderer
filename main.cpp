@@ -10,6 +10,9 @@
 #include "Imgui/imgui_impl_glfw.h"
 #include "Imgui/imgui_impl_opengl3.h"
 
+//#include "hdr.h"       // 加
+//#include "cubemap.h"   // 加
+
 #pragma comment(lib, "glfw3.lib")
 #pragma comment(lib, "opengl32.lib")
 
@@ -122,7 +125,6 @@ int main() {
     ImGui::StyleColorsDark();
 
     RenderSettings settings;
-    //RenderOutput output = render_scene(settings,models);
     RenderOutput output(width_obj, height_obj); // 只创建一次
     render_scene(settings, models, output);     // 直接渲染进去，不拷贝
 

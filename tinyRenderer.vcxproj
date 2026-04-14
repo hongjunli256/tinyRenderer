@@ -124,6 +124,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="cubemap.cpp" />
+    <ClCompile Include="cubemap.h" />
+    <ClCompile Include="hdr.cpp" />
     <ClCompile Include="ImGui\imgui.cpp" />
     <ClCompile Include="ImGui\imgui_draw.cpp" />
     <ClCompile Include="ImGui\imgui_impl_glfw.cpp" />
@@ -139,6 +142,7 @@
     <ClInclude Include="geometry.h" />
     <ClInclude Include="GLFW\glfw3.h" />
     <ClInclude Include="GLFW\glfw3native.h" />
+    <ClInclude Include="hdr.h" />
     <ClInclude Include="ImGui\imconfig.h" />
     <ClInclude Include="ImGui\imgui.h" />
     <ClInclude Include="ImGui\imgui_impl_glfw.h" />

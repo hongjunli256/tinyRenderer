@@ -44,6 +44,15 @@
     <ClCompile Include="ImGui\imgui_impl_glfw.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="cubemap.h">
+      <Filter>头文件</Filter>
+    </ClCompile>
+    <ClCompile Include="cubemap.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="hdr.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="geometry.h">
@@ -80,6 +89,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ImGui\imgui_impl_opengl3_loader.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="hdr.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

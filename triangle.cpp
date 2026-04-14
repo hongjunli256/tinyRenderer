@@ -1,12 +1,10 @@
 ﻿#include"triangle.h"
-//很好简略SSAO代码已经完成了，不过现在是边绘制边zbuffer这肯定不行，接下来我对代码进行效率整理,以及错误修正4.1√
-//整理到目前这个情况就暂时停止了，本来说合并几个shader的，但是感觉后面随着PBR和IBL的加入又会加入更多东西，现在代码重复一下算了4.3√
+#include "cubemap.h"
 //明天看看怎么能够进一步提高效率，我感觉之前的代码里面还是存在莫名的拷贝存在，现在是draw卡通和原模型一起做4.3---提高效率好像没有尽头
 //反正现在我是一定会做阴影的不如直接提前渲染出两个zbuffer顺便为以后优化ssao为3D做准备4.4---计划在PBR和IBL之后
-//我现在还先把三个全局矩阵给处理了得了，免得以后越堆越多，PBR暂缓，看明天上完课还有没有时间写一下初步的PBR4.4√
 //目前已知缺陷非3Dssao,然后阴影的处理变换大小暂时和原窗口一样大实际上这个不合理，但是这些都影响不大我都放在以后做4.4---投资未来
-//终于解决了PBR的bug了4.5√
-//优化优化代码，周末对IBL展开写
+//优化优化代码，周末对IBL展开写，我真没招了，越改越错，最后解决之后还是有白噪点，暂时让ai归一化函数，能用效果也可以，先上传一版吧，好久没更了
+//接下来优化cubemap和hdr读取提高效率，再次检查重复拷贝问题，最后完全整理好IBL
 class GlobalMat
 {
 private:
@@ -103,7 +101,9 @@ struct PBRShader {
 private:
     const Model& model;
     vec4 l;
-    //const double PI = 3.1415926535;
+    const Cubemap* iblIrradiance = nullptr;
+    const Cubemap* iblPrefilter = nullptr;
+    const TGAImage* brdfLUT = nullptr;
 
     vec3 mix(const vec3& a, const vec3& b, double t) const {
         return a * (1.0 - t) + b * t;
@@ -137,7 +137,10 @@ private:
     }
 
 public:
-    PBRShader(const vec3& light, const Model& m, const GlobalMat& gloMat) : model(m) {
+    PBRShader(const vec3& light, const Model& m, const GlobalMat& gloMat,
+        const Cubemap* irradiance = nullptr,
+        const Cubemap* prefilter = nullptr,
+        const TGAImage* brdf = nullptr) : model(m), iblIrradiance(irradiance), iblPrefilter(prefilter), brdfLUT(brdf) {
         l = normalized(gloMat.persp(vec4{ light.x, light.y, light.z, 0.0 }));
     }
 
@@ -226,6 +229,35 @@ public:
         vec3 diffuse = albedo * (Kd / M_PI);
         vec3 finalRGB = (diffuse + specular) * NdotL * 5.5;
 
+        // ==============================
+        // 全自动安全 IBL —— 永远不爆光,有一定问题！！！，暂时让ai挽救，等我研究研究HDR文件再来说，先出效果
+        // ==============================
+        if (iblIrradiance != nullptr)
+        {
+            vec3 N3 = { N.x, N.y, N.z };
+            vec3 Nn = normalized(N3);
+
+            // 1. 采样环境光
+            vec3 env = iblIrradiance->sample(Nn);
+
+            // 2. 自动归一化 → 永远 0~1，不需要调曝光！
+            double max_c = std::max({ env.x, env.y, env.z });
+            if (max_c > 1.0)
+                env = env / max_c;
+
+            // 3. 环境漫反射（柔和照亮暗部，不爆）
+            vec3 ibl_diffuse = env * albedo * vec3({ 0.25 });
+
+            // 4. 环境反射（金属用，弱强度，不爆）
+            vec3 ibl_specular = env * 0.15;
+
+            // 5. 按材质混合：非金属用漫反射，金属用反射
+            vec3 ibl = ibl_diffuse * (1.0 - metallic) + ibl_specular * metallic;
+
+            // 6. 最终叠加：用“混合”而不是“直接加”，永远不爆！
+            finalRGB = finalRGB + ibl * 0.5;
+        }
+
         TGAColor res;
         res[2] = (uint8_t)std::min(std::max(finalRGB.x * 255.0, 0.0), 255.0);
         res[1] = (uint8_t)std::min(std::max(finalRGB.y * 255.0, 0.0), 255.0);
@@ -234,6 +266,7 @@ public:
         return res;
     }
 };
+
 struct PhongShader {
 private:
     const Model& model;
@@ -548,6 +581,16 @@ void create_zbuffer_img(TGAImage& zbuffer_img, std::vector<double>& zbuffer_true
 }
 void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbuffer_img, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<double>& zbuffer_true_shadow,const RenderSettings& setting)
 {
+    // 1. 加载 HDR 并创建 Cubemap
+    HDRImage hdr;
+    hdr.load("HDR/lebombo_1k.hdr"); // 你自己的hdr文件
+
+    Cubemap irradiance(64);
+    irradiance.fromHDR(hdr); // 环境光贴图
+
+    Cubemap prefilter(64);
+    prefilter.fromHDR(hdr); // 反射贴图
+
     SSAOShader ssaoShader(10.0f, 0.005f, 16);
     GlobalMat glomat;
     glomat.modelview(setting.eye, setting.center, setting.up);
@@ -557,7 +600,13 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
     mat<4, 4> modelview_invert_transpose = glomat.modelview_invert_transpose();//ModelView.invert_transpose();
     
     //PhongShader shader(setting.light_vec,model,glomat);
-    PBRShader shader(setting.light_vec, model, glomat);
+    PBRShader shader(
+        setting.light_vec,
+        model,
+        glomat,
+        &irradiance,  // 加
+        &prefilter    // 加
+    );
     ToonShader toonShader(orange, setting.light_vec, model,glomat);
     //我们需要提前zbuffer让SSAO可以正确计算AO系数
     for (int i = 0; i < model.nfaces(); i++)

@@ -2,7 +2,9 @@
 #include <cmath>
 #include <cassert>
 #include <iostream>
-
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 template<int n> struct vec {
     double data[n] = { 0 };
     double& operator[](const int i) { assert(i >= 0 && i < n); return data[i]; }
@@ -47,6 +49,9 @@ template<int n> std::ostream& operator<<(std::ostream& out, const vec<n>& v) {
     for (int i = 0; i < n; i++) out << v[i] << " ";
     return out;
 }
+typedef vec<2> vec2;
+typedef vec<3> vec3;
+typedef vec<4> vec4;
 
 template<> struct vec<2> {
     double x = 0, y = 0;
@@ -58,6 +63,13 @@ template<> struct vec<3> {
     double x = 0, y = 0, z = 0;
     double& operator[](const int i) { assert(i >= 0 && i < 3); return i ? (1 == i ? y : z) : x; }
     double  operator[](const int i) const { assert(i >= 0 && i < 3); return i ? (1 == i ? y : z) : x; }
+
+    vec<3>& operator+=(const vec<3>& other) {
+        x += other.x;
+        y += other.y;
+        z += other.z;
+        return *this;
+    }
 };
 
 template<> struct vec<4> {
@@ -68,9 +80,6 @@ template<> struct vec<4> {
     vec<3> xyz() const { return { x, y, z }; }
 };
 
-typedef vec<2> vec2;
-typedef vec<3> vec3;
-typedef vec<4> vec4;
 
 template<int n> double norm(const vec<n>& v) {
     return std::sqrt(v * v);
