@@ -20,7 +20,7 @@ public:
         vec3 n = normalized(light - center);
         vec3 l = normalized(cross(up, n));
         vec3 m = normalized(cross(n, l));
-        ModelView_for_Light = mat<4, 4>{ {{l.x,l.y,l.z,0}, {m.x,m.y,m.z,0}, {n.x,n.y,n.z,0}, {0,0,0,1}} } *mat<4, 4>{{{1, 0, 0, -center.x}, { 0,1,0,-center.y }, { 0,0,1,-center.z }, { 0,0,0,1 }}};
+        ModelView_for_Light = mat<4, 4>{ {{l.x,l.y,l.z,0}, {m.x,m.y,m.z,0}, {n.x,n.y,n.z,0}, {0,0,0,1}} };// *mat<4, 4>{{{1, 0, 0, -center.x}, { 0,1,0,-center.y }, { 0,0,1,-center.z }, { 0,0,0,1 }}};
     }
     void perspective(const double f) {
         Perspective = { {{1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0, -1 / f,1}} };
@@ -71,11 +71,9 @@ public:
     {
         for (int i = 0; i < 3; i++)
         {
-            //再三考虑下还是觉得，三角形处理的是透视下的点，而不是屏幕实际点更合适
+            //再三考虑下还是觉得，三角形处理的是透视下的点，而不是屏幕实际点更合适,免得有时候要处理透视有时候不用，避免提前处理导致麻烦
 
-                dot[i] = gloMat.persp(gloMat.rot(model.vert(face, i),isShadow));
-
-            
+            dot[i] = gloMat.persp(gloMat.rot(model.vert(face, i),isShadow));
             uv[i] = model.uv(face, i);
             norm[i] = model.normal(face, i);
         }
@@ -114,7 +112,6 @@ private:
         float a2 = a * a;
         float a4 = a2 * a2;
         float a5 = a4 * a;
-        //return F0 + (vec3{ 1.0,1.0,1.0 } - F0) * pow(1.0 - cosTheta, 5.0);
         return F0 + (vec3{ 1.0,1.0,1.0 } - F0) * a5;
     }
 
@@ -177,7 +174,7 @@ public:
 
         // ==============================================================================================
         // 【正确标准PBR代码 —— 已注释】
-        // 原因：你没有标准 PBR 金属/粗糙度贴图，强行开启会发白、发绿、出现异常高光
+        // 原因：我标准 PBR 金属/粗糙度贴图，强行开启会发白、发绿、出现异常高光
         // ==============================================================================================
         /*
         double metallic = metallicMap.r;          // 必须有：标准金属度贴图
@@ -196,9 +193,9 @@ public:
         // 【正确标准PBR代码 —— 已注释】
         // 原因：无金属贴图 → 开启后F0错误 → 颜色爆炸、发绿、发白
         // ==============================================================================================
-        /*
+        ///*
         F0 = mix(F0, albedo, metallic);
-        */
+        //*/
 
         vec3 F = fresnel(F0, HdotV);
 
@@ -216,46 +213,43 @@ public:
         // ============================
         // 当前运行：简化能量守恒
         // ============================
-        double Kd = 1.0 - Ks;
+        //double Kd = 1.0 - Ks;
 
         // ==============================================================================================
         // 【正确标准PBR代码 —— 已注释】
         // 原因：无金属贴图 → 开启后能量计算错误 → 白点、溢色、全黑
         // ==============================================================================================
-        /*
+        ///*
         double Kd = (1.0 - Ks) * (1.0 - metallic);
-        */
+        //*/
 
         vec3 diffuse = albedo * (Kd / M_PI);
         vec3 finalRGB = (diffuse + specular) * NdotL * 5.5;
 
-        // ==============================
-        // 全自动安全 IBL —— 永远不爆光,有一定问题！！！，暂时让ai挽救，等我研究研究HDR文件再来说，先出效果
-        // ==============================
+        //IBL
         if (iblIrradiance != nullptr)
         {
             vec3 N3 = { N.x, N.y, N.z };
+            vec3 V3 = { V.x, V.y, V.z };
             vec3 Nn = normalized(N3);
+            vec3 Vn = normalized(V3);
 
-            // 1. 采样环境光
-            vec3 env = iblIrradiance->sample(Nn);
+            // 反射方向
+            vec3 R = normalized(2.0f *(Nn*Vn) * Nn - Vn);
 
-            // 2. 自动归一化 → 永远 0~1，不需要调曝光！
-            double max_c = std::max({ env.x, env.y, env.z });
-            if (max_c > 1.0)
-                env = env / max_c;
+            // 1) 漫反射：irradiance
+            vec3 env_diff = iblIrradiance->sample(Nn);
+            vec3 ibl_diff = env_diff * albedo * vec3({ 0.22f });
 
-            // 3. 环境漫反射（柔和照亮暗部，不爆）
-            vec3 ibl_diffuse = env * albedo * vec3({ 0.25 });
+            // 2) 高光反射：prefilter
+            vec3 env_spec = iblPrefilter->sample(R);
+            vec3 ibl_spec = env_spec * 0.5f;
 
-            // 4. 环境反射（金属用，弱强度，不爆）
-            vec3 ibl_specular = env * 0.15;
+            // 3) 混合
+            vec3 ibl = ibl_diff * (1.0 - metallic) + ibl_spec * metallic;
 
-            // 5. 按材质混合：非金属用漫反射，金属用反射
-            vec3 ibl = ibl_diffuse * (1.0 - metallic) + ibl_specular * metallic;
-
-            // 6. 最终叠加：用“混合”而不是“直接加”，永远不爆！
-            finalRGB = finalRGB + ibl * 0.5;
+            // 4) 最终叠加
+            finalRGB = finalRGB + ibl * 0.8f;
         }
 
         TGAColor res;
@@ -545,6 +539,7 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
                     color_more_real[0] = std::min(255, (int)(color_more_real[0] * ao));
                     color_more_real[1] = std::min(255, (int)(color_more_real[1] * ao));
                     color_more_real[2] = std::min(255, (int)(color_more_real[2] * ao));
+
                     TGAColor color_more_real_toon = shader2.color(tri, bar, model_);
 
                     framebuffer.set(px, py, color_more_real);
@@ -589,7 +584,7 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
     irradiance.fromHDR(hdr); // 环境光贴图
 
     Cubemap prefilter(64);
-    prefilter.fromHDR(hdr); // 反射贴图
+    prefilter.generatePrefilter(irradiance,3); // 反射贴图
 
     SSAOShader ssaoShader(10.0f, 0.005f, 16);
     GlobalMat glomat;
@@ -604,8 +599,8 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
         setting.light_vec,
         model,
         glomat,
-        &irradiance,  // 加
-        &prefilter    // 加
+        &irradiance,
+        &prefilter
     );
     ToonShader toonShader(orange, setting.light_vec, model,glomat);
     //我们需要提前zbuffer让SSAO可以正确计算AO系数

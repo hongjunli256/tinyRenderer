@@ -38,7 +38,7 @@ struct Cubemap
     // 核心函数1：从HDR全景图创建立方体
     // ------------------------------
     void fromHDR(const HDRImage& hdr);
-
+    void generatePrefilter(const Cubemap& source, int roughnessLevel);
     // ------------------------------
     // 核心函数2：用方向向量采样颜色
     // ------------------------------

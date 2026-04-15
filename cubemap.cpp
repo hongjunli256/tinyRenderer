@@ -106,15 +106,64 @@ vec3 Cubemap::sample(vec3 dir) const
         face[faceIdx][i + 2]
     };
 
-    // 手动实现Reinhard色调映射，不依赖向量除法运算符
+
     color.x = color.x / (color.x + 1.0);
     color.y = color.y / (color.y + 1.0);
     color.z = color.z / (color.z + 1.0);
 
-    // 额外做个安全Clamp，防止负数
+
     color.x = std::max(0.0, std::min(color.x, 1.0));
     color.y = std::max(0.0, std::min(color.y, 1.0));
     color.z = std::max(0.0, std::min(color.z, 1.0));
 
     return color;
+}
+
+void Cubemap::generatePrefilter(const Cubemap& source, int roughnessLevel)
+{
+    int maxMip = 5;
+    roughnessLevel = std::clamp(roughnessLevel, 0, maxMip);
+
+    float blur = (float)roughnessLevel / (float)maxMip;
+
+    for (int side = 0; side < 6; side++)
+    {
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float u = (x + 0.5f) / size;
+                float v = (y + 0.5f) / size;
+                vec3 dir;
+
+                if (side == CUBE_POSITIVE_X) dir = { 1, -(v * 2 - 1), -(u * 2 - 1) };
+                if (side == CUBE_NEGATIVE_X) dir = { -1, -(v * 2 - 1), u * 2 - 1 };
+                if (side == CUBE_POSITIVE_Y) dir = { u * 2 - 1, 1, v * 2 - 1 };
+                if (side == CUBE_NEGATIVE_Y) dir = { u * 2 - 1, -1, -(v * 2 - 1) };
+                if (side == CUBE_POSITIVE_Z) dir = { u * 2 - 1, -(v * 2 - 1), 1 };
+                if (side == CUBE_NEGATIVE_Z) dir = { -(u * 2 - 1), -(v * 2 - 1), -1 };
+
+                dir = normalized(dir);
+
+                vec3 finalColor = { 0,0,0 };
+                int samples = 16;
+                for (int i = 0; i < samples; i++)
+                {
+                    vec3 jitter = {
+                        (rand() / (float)RAND_MAX - 0.5f) * blur,
+                        (rand() / (float)RAND_MAX - 0.5f) * blur,
+                        (rand() / (float)RAND_MAX - 0.5f) * blur
+                    };
+                    vec3 sampleDir = normalized(dir + jitter);
+                    finalColor = finalColor + source.sample(sampleDir);
+                }
+                finalColor = finalColor * (1.0f / samples);
+
+                int i = (y * size + x) * 3;
+                face[side][i + 0] = finalColor.x;
+                face[side][i + 1] = finalColor.y;
+                face[side][i + 2] = finalColor.z;
+            }
+        }
+    }
 }
