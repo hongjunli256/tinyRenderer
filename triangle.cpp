@@ -71,7 +71,7 @@ public:
     {
         for (int i = 0; i < 3; i++)
         {
-            //再三考虑下还是觉得，三角形处理的是透视下的点，而不是屏幕实际点更合适,免得有时候要处理透视有时候不用，避免提前处理导致麻烦
+            //再三考虑下还是觉得，三角形处理的是透视矩阵乘下的点，不提前归一，也不用屏幕实际点,免得有时候要处理透视有时候不用，避免提前处理导致麻烦
 
             dot[i] = gloMat.persp(gloMat.rot(model.vert(face, i),isShadow));
             uv[i] = model.uv(face, i);
@@ -153,9 +153,9 @@ public:
 
         vec2 uv = tri.uv_gravity(bar[0], bar[1], bar[2]);
         vec4 N = normalized(D_mat.transpose() * model.normal(uv));
-        vec4 V = { 0.0, 0.0, 1.0, 0.0 };
-        vec4 L = l;
-        vec4 H = normalized(V + L);
+        vec4 V = { 0, 0, 1, 0 };
+        //vec4 L = l;
+        vec4 H = normalized(V + l);
 
         TGAColor dif = model.diffuse(uv);
         TGAColor sp = model.specular(uv);
@@ -170,11 +170,11 @@ public:
         // 当前运行：简化版（适配旧贴图）
         // ============================
         double roughness = 1.0 - std::max(sp[2] / 255.0, 0.0);
+        roughness = std::max(roughness, 0.05);
         double metallic = sp[1] / 255.0;
 
         // ==============================================================================================
         // 【正确标准PBR代码 —— 已注释】
-        // 原因：我标准 PBR 金属/粗糙度贴图，强行开启会发白、发绿、出现异常高光
         // ==============================================================================================
         /*
         double metallic = metallicMap.r;          // 必须有：标准金属度贴图
@@ -183,19 +183,13 @@ public:
         */
 
         double NdotV = std::max(N * V, 0.001);
-        double NdotL = std::max(N * L, 0.001);
+        double NdotL = std::max(N * l, 0.001);
         double NdotH = std::max(N * H, 0.001);
         double HdotV = std::max(H * V, 0.001);
 
         vec3 F0 = { 0.04, 0.04, 0.04 };
 
-        // ==============================================================================================
-        // 【正确标准PBR代码 —— 已注释】
-        // 原因：无金属贴图 → 开启后F0错误 → 颜色爆炸、发绿、发白
-        // ==============================================================================================
-        ///*
         F0 = mix(F0, albedo, metallic);
-        //*/
 
         vec3 F = fresnel(F0, HdotV);
 
@@ -209,19 +203,7 @@ public:
         };
 
         double Ks = (F.x + F.y + F.z) / 3.0;
-
-        // ============================
-        // 当前运行：简化能量守恒
-        // ============================
-        //double Kd = 1.0 - Ks;
-
-        // ==============================================================================================
-        // 【正确标准PBR代码 —— 已注释】
-        // 原因：无金属贴图 → 开启后能量计算错误 → 白点、溢色、全黑
-        // ==============================================================================================
-        ///*
         double Kd = (1.0 - Ks) * (1.0 - metallic);
-        //*/
 
         vec3 diffuse = albedo * (Kd / M_PI);
         vec3 finalRGB = (diffuse + specular) * NdotL * 5.5;
@@ -271,9 +253,6 @@ public:
     }
 
     TGAColor color(triangle& tri, const vec3 bar, mat<4, 4>modelView_invert_transpose, mat<2, 4>&T) const {
-        //mat<2, 4>E = { tri.dot[1] - tri.dot[0],tri.dot[2] - tri.dot[0] };
-        //mat<2, 2>U = { tri.uv[1] - tri.uv[0],tri.uv[2] - tri.uv[0] };
-        //mat<2, 4>T = U.invert() * E;
         vec4 t0 = normalized(T[0]);
         vec4 t1 = normalized(T[1]);
         vec4 n_t = normalized((modelView_invert_transpose * tri.norm_gravity(bar[0], bar[1], bar[2])));
@@ -523,9 +502,10 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
                 int idx = px + py * width;
                 if (z >= zbuffer_true[idx])
                 {
+                    //这里如果没有透视矫正模型由于不那么规律看不出来，但是地上的平面会很明显
                     double for_c = (double)ce0 / tri.dot[2].w;
-                    double for_a = (double)ce1 / tri.dot[0].w;
-                    double for_b = (double)ce2 / tri.dot[1].w;
+                    double for_a = (double)ce1/ tri.dot[0].w;
+                    double for_b = (double)ce2/ tri.dot[1].w;
                     vec3 bar = { for_a,for_b ,for_c };
                     bar = bar / (for_a + for_b + for_c);
 
@@ -578,7 +558,7 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
 {
     // 1. 加载 HDR 并创建 Cubemap
     HDRImage hdr;
-    hdr.load("HDR/lebombo_1k.hdr"); // 你自己的hdr文件
+    hdr.load("HDR/lebombo_1k.hdr");
 
     Cubemap irradiance(64);
     irradiance.fromHDR(hdr); // 环境光贴图
