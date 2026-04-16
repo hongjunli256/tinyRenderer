@@ -166,9 +166,6 @@ public:
             dif[0] / 255.0
         };
 
-        // ============================
-        // 当前运行：简化版（适配旧贴图）
-        // ============================
         double roughness = 1.0 - std::max(sp[2] / 255.0, 0.0);
         roughness = std::max(roughness, 0.05);
         double metallic = sp[1] / 255.0;
