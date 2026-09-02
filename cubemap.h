@@ -1,7 +1,10 @@
 #pragma once
-#include "geometry.h"       // 你自己的 vec3 类
-#include "hdr.h"      // 你刚创建的 HDR 读取类
+#define _USE_MATH_DEFINES
+#include "geometry.h"
+#include "hdr.h"
 #include <cmath>
+#include <cstring>
+#include <algorithm>
 
 // 立方体6个面
 #define CUBE_POSITIVE_X 0
@@ -13,19 +16,18 @@
 
 struct Cubemap
 {
-    int size = 128;                // 立方图大小（128~256足够IBL）
-    float* face[6] = { nullptr };   // 6个面，每个面是 float RGB 数据
+    int size = 128;
+    float* face[6] = { nullptr };
 
-    // 构造：创建6个面的内存
     Cubemap(int cubeSize) : size(cubeSize)
     {
         for (int i = 0; i < 6; i++)
         {
             face[i] = new float[size * size * 3];
+            memset(face[i], 0, sizeof(float) * size * size * 3);
         }
     }
 
-    // 析构：释放内存
     ~Cubemap()
     {
         for (int i = 0; i < 6; i++)
@@ -34,17 +36,17 @@ struct Cubemap
         }
     }
 
-    // ------------------------------
-    // 核心函数1：从HDR全景图创建立方体
-    // ------------------------------
+    // 禁止拷贝，防止双重释放；允许移动
+    Cubemap(const Cubemap&) = delete;
+    Cubemap& operator=(const Cubemap&) = delete;
+    Cubemap(Cubemap&&) noexcept = default;
+    Cubemap& operator=(Cubemap&&) noexcept = default;
+
     void fromHDR(const HDRImage& hdr);
     void generatePrefilter(const Cubemap& source, int roughnessLevel);
-    // ------------------------------
-    // 核心函数2：用方向向量采样颜色
-    // ------------------------------
+    void generateIrradiance(const Cubemap& source);
     vec3 sample(vec3 dir) const;
 
 private:
-    // 内部工具：从方向获取面+UV坐标
     void getFaceUV(vec3 dir, int& outFace, float& outU, float& outV) const;
 };

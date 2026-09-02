@@ -1,5 +1,6 @@
 #pragma once
 #include"model.h"
+#include "cubemap.h"
 constexpr int width_obj = 800;
 constexpr int height_obj = 800;
 //const double PI = 3.1415926535;
@@ -13,11 +14,36 @@ constexpr TGAColor blue = { 255, 128,  64, 255 };
 constexpr TGAColor yellow = { 0, 255, 255, 255 };
 constexpr TGAColor orange = { 0, 165, 255, 255 };
 
-struct RenderSettings {
-    vec3 eye = { 0, 0, 4 };          // 相机
-    vec3 light_vec = { 1, 1, 1 };    // 光线方向
+class RenderSettings {
+public:
+    //RenderSettings(){}
+    RenderSettings()
+    {
+        HDRImage hdr;
+        if (!hdr.load("HDR/sky_hdr.hdr"))//这个完全可以作为参数但是我现在暂时不做
+        {
+            //加载失败直接返回，cubemap保持清零黑色
+            return;
+        }
+        Cubemap baseCube(64);
+        baseCube.fromHDR(hdr);
+        irradiance.generateIrradiance(baseCube);
+        prefilter.generatePrefilter(baseCube, 3);
+    }
+
+    // 重要：成员含有不可拷贝Cubemap，禁止拷贝；允许移动
+    RenderSettings(const RenderSettings&) = delete;
+    RenderSettings& operator=(const RenderSettings&) = delete;
+    RenderSettings(RenderSettings&&) noexcept = default;
+    RenderSettings& operator=(RenderSettings&&) noexcept = default;
+
+    vec3 eye = { 0, 0, 4 };
+    vec3 light_vec = { 1, 1, 1 };
     const vec3 center = { 0,0,0 };
     const vec3 up = { 0,1,0 };
+
+    Cubemap irradiance{ 64 };
+    Cubemap prefilter{ 64 };
 };
 void build_obj_triangle(const Model&model, TGAImage& framebuffer, TGAImage& zbuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<double>& zbuffer_true_shadow, const RenderSettings &setting);
 

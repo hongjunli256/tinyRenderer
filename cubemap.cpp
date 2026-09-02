@@ -6,8 +6,10 @@ static vec3 sampleHDR(const HDRImage& hdr, vec3 dir)
 {
     dir = normalized(dir);
 
-    float phi = atan2(dir.z, dir.x);
+    // atan2(y, x)
+    float phi = atan2(dir.x, dir.z);
     float theta = acos(dir.y);
+
     float u = 0.5f - (phi / (2.0f * (float)M_PI));
     float v = theta / (float)M_PI;
 
@@ -80,9 +82,13 @@ void Cubemap::getFaceUV(vec3 dir, int& outFace, float& outU, float& outV) const
     default: u = 0; vv = 0; break;
     }
 
-    float maxAxis = ax;
-    if (outFace == 2 || outFace == 3) maxAxis = ay;
-    else maxAxis = az;
+    float maxAxis;
+    if (outFace == CUBE_POSITIVE_Y || outFace == CUBE_NEGATIVE_Y)
+        maxAxis = ay;
+    else if (outFace == CUBE_POSITIVE_X || outFace == CUBE_NEGATIVE_X)
+        maxAxis = ax;
+    else
+        maxAxis = az;
 
     outU = (u / maxAxis + 1.0f) * 0.5f;
     outV = (vv / maxAxis + 1.0f) * 0.5f;
@@ -106,24 +112,106 @@ vec3 Cubemap::sample(vec3 dir) const
         face[faceIdx][i + 2]
     };
 
-
-    color.x = color.x / (color.x + 1.0);
-    color.y = color.y / (color.y + 1.0);
-    color.z = color.z / (color.z + 1.0);
-
-
-    color.x = std::max(0.0, std::min(color.x, 1.0));
-    color.y = std::max(0.0, std::min(color.y, 1.0));
-    color.z = std::max(0.0, std::min(color.z, 1.0));
-
+    color.x = std::max(0.0, color.x);
+    color.y = std::max(0.0, color.y);
+    color.z = std::max(0.0, color.z);
     return color;
 }
 
+void Cubemap::generateIrradiance(const Cubemap& source)
+{
+    const int numSamples = 16; // 16足够，不要32
+
+    for (int side = 0; side < 6; side++)
+    {
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float u = (x + 0.5f) / size;
+                float v = (y + 0.5f) / size;
+                vec3 dir;
+                if (side == CUBE_POSITIVE_X) dir = { 1, -(v * 2 - 1), -(u * 2 - 1) };
+                if (side == CUBE_NEGATIVE_X) dir = { -1, -(v * 2 - 1), u * 2 - 1 };
+                if (side == CUBE_POSITIVE_Y) dir = { u * 2 - 1, 1, v * 2 - 1 };
+                if (side == CUBE_NEGATIVE_Y) dir = { u * 2 - 1, -1, -(v * 2 - 1) };
+                if (side == CUBE_POSITIVE_Z) dir = { u * 2 - 1, -(v * 2 - 1), 1 };
+                if (side == CUBE_NEGATIVE_Z) dir = { -(u * 2 - 1), -(v * 2 - 1), -1 };
+                dir = normalized(dir);
+
+                vec3 irradiance{ 0,0,0 };
+
+                for (int i = 0; i < numSamples; i++)
+                {
+                    for (int j = 0; j < numSamples; j++)
+                    {
+                        float u1 = (i + 0.5f) / numSamples;
+                        float u2 = (j + 0.5f) / numSamples;
+
+                        float phi = 2.0f * (float)M_PI * u1;
+                        float cosTheta = sqrtf(u2);
+                        float sinTheta = sqrtf(1.0f - u2);
+
+                        vec3 t{ cosf(phi) * sinTheta, sinf(phi) * sinTheta, cosTheta };
+
+                        vec3 up;
+                        if (fabs(dir.y) < 0.999f)
+                            up = { 0,1,0 };
+                        else
+                            up = { 1,0,0 };
+
+                        vec3 tangent = cross(up, dir);
+                        float tLen = sqrtf(tangent.x * tangent.x + tangent.y * tangent.y + tangent.z * tangent.z);
+                        if (tLen < 1e-6f)
+                        {
+                            tangent = { 1,0,0 };
+                        }
+                        else
+                        {
+                            tangent = tangent / tLen;
+                        }
+                        vec3 bitangent = cross(tangent, dir);
+                        bitangent = normalized(bitangent);
+
+                        vec3 sampleDir = tangent * t.x + bitangent * t.y + dir * t.z;
+                        sampleDir = normalized(sampleDir);
+
+                        float ndotwi = sampleDir* dir;
+                        if (ndotwi <= 0.0f)
+                            continue;
+
+                        vec3 col = source.sample(sampleDir);
+                        // Reinhard软高光压缩，无硬截断，压制HDR尖峰
+                        col.x = col.x / (1.0f + col.x);
+                        col.y = col.y / (1.0f + col.y);
+                        col.z = col.z / (1.0f + col.z);
+
+                        irradiance = irradiance + col;
+                    }
+                }
+                // 余弦重要性采样正确缩放
+                float scale = (float)M_PI / float(numSamples * numSamples);
+                irradiance = irradiance * scale;
+
+                // 全部使用三元表达式，不使用std::max / std::min
+                irradiance.x = (irradiance.x < 0.0f) ? 0.0f : ((irradiance.x > 100.0f) ? 100.0f : irradiance.x);
+                irradiance.y = (irradiance.y < 0.0f) ? 0.0f : ((irradiance.y > 100.0f) ? 100.0f : irradiance.y);
+                irradiance.z = (irradiance.z < 0.0f) ? 0.0f : ((irradiance.z > 100.0f) ? 100.0f : irradiance.z);
+
+                int idx = (y * size + x) * 3;
+                face[side][idx + 0] = irradiance.x;
+                face[side][idx + 1] = irradiance.y;
+                face[side][idx + 2] = irradiance.z;
+            }
+        }
+    }
+}
+
+// 注意：当前只是简单随机抖动模糊，不是GGX重要性采样，仅做环境模糊，不适合PBR高光IBL
 void Cubemap::generatePrefilter(const Cubemap& source, int roughnessLevel)
 {
     int maxMip = 5;
     roughnessLevel = std::clamp(roughnessLevel, 0, maxMip);
-
     float blur = (float)roughnessLevel / (float)maxMip;
 
     for (int side = 0; side < 6; side++)

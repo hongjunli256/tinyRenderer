@@ -193,4 +193,9 @@ template<> struct dt<1> {   // template specialization to stop the recursion
         return src[0][0];
     }
 };
-
+// 逐元素乘法，vec * vec → vec,为了PBR服务
+template<int n> vec<n> mul(const vec<n>& lhs, const vec<n>& rhs) {
+    vec<n> ret;
+    for (int i = n; i--; ret[i] = lhs[i] * rhs[i]);
+    return ret;
+}

@@ -1,10 +1,6 @@
 ﻿#include"triangle.h"
 #include "cubemap.h"
-//明天看看怎么能够进一步提高效率，我感觉之前的代码里面还是存在莫名的拷贝存在，现在是draw卡通和原模型一起做4.3---提高效率好像没有尽头
-//反正现在我是一定会做阴影的不如直接提前渲染出两个zbuffer顺便为以后优化ssao为3D做准备4.4---计划在PBR和IBL之后
-//目前已知缺陷非3Dssao,然后阴影的处理变换大小暂时和原窗口一样大实际上这个不合理，但是这些都影响不大我都放在以后做4.4
-//优化优化代码，周末对IBL展开写，我真没招了，越改越错，最后解决之后还是有白噪点，暂时用归一化函数，能用效果也可以，先上传一版吧，好久没更了
-//接下来优化cubemap和hdr读取提高效率，再次检查重复拷贝问题，最后完全整理好IBL
+
 class GlobalMat
 {
 private:
@@ -20,7 +16,8 @@ public:
         vec3 n = normalized(light - center);
         vec3 l = normalized(cross(up, n));
         vec3 m = normalized(cross(n, l));
-        ModelView_for_Light = mat<4, 4>{ {{l.x,l.y,l.z,0}, {m.x,m.y,m.z,0}, {n.x,n.y,n.z,0}, {0,0,0,1}} };// *mat<4, 4>{{{1, 0, 0, -center.x}, { 0,1,0,-center.y }, { 0,0,1,-center.z }, { 0,0,0,1 }}};
+        ModelView_for_Light = mat<4, 4>{ {{l.x,l.y,l.z,0}, {m.x,m.y,m.z,0}, {n.x,n.y,n.z,0}, {0,0,0,1}} };//*mat<4, 4>{{{1, 0, 0, -center.x}, { 0,1,0,-center.y }, { 0,0,1,-center.z }, { 0,0,0,1 }}};
+        //我现在用的是方向面光
     }
     void perspective(const double f) {
         Perspective = { {{1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0, -1 / f,1}} };
@@ -98,7 +95,7 @@ private:
 struct PBRShader {
 private:
     const Model& model;
-    vec4 l;
+    vec4 l; // 视图空间光源方向
     const Cubemap* iblIrradiance = nullptr;
     const Cubemap* iblPrefilter = nullptr;
     const TGAImage* brdfLUT = nullptr;
@@ -107,14 +104,16 @@ private:
         return a * (1.0 - t) + b * t;
     }
 
+    // Schlick‑Fresnel F0 -> F(cosTheta)
     vec3 fresnel(const vec3& F0, double cosTheta) const {
-        float a = 1.0 - cosTheta;
+        float a = static_cast<float>(1.0 - cosTheta);
         float a2 = a * a;
         float a4 = a2 * a2;
         float a5 = a4 * a;
         return F0 + (vec3{ 1.0,1.0,1.0 } - F0) * a5;
     }
 
+    // GGX NDF
     double D_GGX(double NdotH, double roughness) const {
         double a = roughness * roughness;
         double a2 = a * a;
@@ -123,6 +122,7 @@ private:
         return a2 / (M_PI * denom * denom);
     }
 
+    // Schlick‑GGX几何遮蔽
     double G_Schlick(double NdotV, double roughness) const {
         double r = roughness + 1.0;
         double k = (r * r) / 8.0;
@@ -137,102 +137,113 @@ public:
     PBRShader(const vec3& light, const Model& m, const GlobalMat& gloMat,
         const Cubemap* irradiance = nullptr,
         const Cubemap* prefilter = nullptr,
-        const TGAImage* brdf = nullptr) : model(m), iblIrradiance(irradiance), iblPrefilter(prefilter), brdfLUT(brdf) {
-        l = normalized(gloMat.persp(vec4{ light.x, light.y, light.z, 0.0 }));
+        const TGAImage* brdf = nullptr)
+        : model(m), iblIrradiance(irradiance), iblPrefilter(prefilter), brdfLUT(brdf)
+    {
+        // light:世界空间方向，旋转到视图空间
+        l = normalized(gloMat.rot(vec4{ light.x, light.y, light.z, 0.0 }, false));
     }
 
-    TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& modelView_invert_transpose,mat<2,4>&T) const {
+    TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& modelView_invert_transpose,const mat<2, 4>& T) const
+    {
 
         vec4 t0 = normalized(T[0]);
         vec4 t1 = normalized(T[1]);
         vec4 n_t = normalized(modelView_invert_transpose * tri.norm_gravity(bar[0], bar[1], bar[2]));
+
+        // Gram‑Schmidt 正交化 TBN
+        t0 = normalized(t0 - (t0 * n_t) * n_t);
+        t1 = normalized(t1 - (t1 * n_t) * n_t - (t1 * t0) * t0);
+
+        // D_mat: 切线空间 -> 视图空间，列向量：T,B,N
         mat<4, 4> D_mat = { t0, t1, n_t, vec4{0,0,0,1} };
 
         vec2 uv = tri.uv_gravity(bar[0], bar[1], bar[2]);
-        vec4 N = normalized(D_mat.transpose() * model.normal(uv));
-        vec4 V = { 0, 0, 1, 0 };
-        //vec4 L = l;
+
+        // 法线贴图采样 [0‑255]
+        vec4 normalTex = model.normal(uv);
+        vec4 N_tangent = vec4{
+            normalTex.x / 255.0 * 2.0 - 1.0,
+            normalTex.y / 255.0 * 2.0 - 1.0,
+            normalTex.z / 255.0 * 2.0 - 1.0,
+            0.0
+        };
+        // 如果你的法线贴图Y是翻转的，打开下面这行
+        //N_tangent.y = -N_tangent.y;
+
+        N_tangent = normalized(N_tangent);
+        vec4 N = normalized(D_mat * N_tangent);
+
+        // ========== 视图空间视线向量：表面指向相机，看向‑Z ==========
+        vec4 V = { 0, 0, -1, 0 };
         vec4 H = normalized(V + l);
 
         TGAColor dif = model.diffuse(uv);
         TGAColor sp = model.specular(uv);
 
+        // albedo BGR→RGB
         vec3 albedo = {
             dif[2] / 255.0,
             dif[1] / 255.0,
             dif[0] / 255.0
         };
 
+        // spec贴图约定: G=metallic, B=1‑roughness
         double roughness = 1.0 - std::max(sp[2] / 255.0, 0.0);
         roughness = std::max(roughness, 0.05);
         double metallic = sp[1] / 255.0;
 
-        // ==============================================================================================
-        // 【正确标准PBR代码 —— 已注释】
-        // ==============================================================================================
-        /*
-        double metallic = metallicMap.r;          // 必须有：标准金属度贴图
-        double roughness = roughnessMap.g;        // 必须有：标准粗糙度贴图
-        roughness = std::max(roughness, 0.05);
-        */
+        // 限制下界，避免除0
+        double NdotV = std::max(N * V, 0.0001);
+        double NdotL = std::max(N * l, 0.0);
+        double NdotH = std::max(N * H, 0.0001);
+        double HdotV = std::max(H * V, 0.0001);
 
-        double NdotV = std::max(N * V, 0.001);
-        double NdotL = std::max(N * l, 0.001);
-        double NdotH = std::max(N * H, 0.001);
-        double HdotV = std::max(H * V, 0.001);
 
         vec3 F0 = { 0.04, 0.04, 0.04 };
-
         F0 = mix(F0, albedo, metallic);
 
         vec3 F = fresnel(F0, HdotV);
-
         double D = D_GGX(NdotH, roughness);
         double G = G_Smith(NdotV, NdotL, roughness);
-        vec3 specular = (F * D * G) / (4.0 * NdotV * NdotL + 0.3);
-        specular = {
-            std::min(specular.x, 1.0),
-            std::min(specular.y, 1.0),
-            std::min(specular.z, 1.0)
-        };
+
+        // 物理正确分母，移除+0.3错误偏移
+        double denom = 4.0 * NdotV * NdotL;
+        vec3 specular = F * (D * G) / std::max(denom, 0.0001);
+
+        // 限制高光数值，防止爆炸
+        specular.x = std::min(specular.x, 2.0);
+        specular.y = std::min(specular.y, 2.0);
+        specular.z = std::min(specular.z, 2.0);
 
         double Ks = (F.x + F.y + F.z) / 3.0;
         double Kd = (1.0 - Ks) * (1.0 - metallic);
-
         vec3 diffuse = albedo * (Kd / M_PI);
-        vec3 finalRGB = (diffuse + specular) * NdotL * 5.5;
 
-        //IBL
+        // 直接光照
+        vec3 finalRGB = (diffuse + specular) * NdotL*5.5;
+
         if (iblIrradiance != nullptr)
         {
             vec3 N3 = { N.x, N.y, N.z };
-            vec3 V3 = { V.x, V.y, V.z };
-            vec3 Nn = normalized(N3);
-            vec3 Vn = normalized(V3);
+            vec3 env_diff = iblIrradiance->sample(N3);
 
-            // 反射方向
-            vec3 R = normalized(2.0f *(Nn*Vn) * Nn - Vn);
-
-            // 1) 漫反射：irradiance
-            vec3 env_diff = iblIrradiance->sample(Nn);
-            vec3 ibl_diff = env_diff * albedo * vec3({ 0.22f });
-
-            // 2) 高光反射：prefilter
-            vec3 env_spec = iblPrefilter->sample(R);
-            vec3 ibl_spec = env_spec * 0.5f;
-
-            // 3) 混合
-            vec3 ibl = ibl_diff * (1.0 - metallic) + ibl_spec * metallic;
-
-            // 4) 最终叠加
-            finalRGB = finalRGB + ibl * 0.8f;
+            const float envExposure = 2.5f;
+            vec3 ibl_diff = mul(env_diff, albedo) * (1.0f / (float)M_PI) * envExposure * (1.0f - metallic);
+            finalRGB = finalRGB + ibl_diff;
         }
 
+        // 简单clamp，暂时关闭Reinhard，方便调试
+        finalRGB.x = finalRGB.x < 0.0 ? 0.0 : (finalRGB.x > 1.0 ? 1.0 : finalRGB.x);
+        finalRGB.y = finalRGB.y < 0.0 ? 0.0 : (finalRGB.y > 1.0 ? 1.0 : finalRGB.y);
+        finalRGB.z = finalRGB.z < 0.0 ? 0.0 : (finalRGB.z > 1.0 ? 1.0 : finalRGB.z);
+
         TGAColor res;
-        res[2] = (uint8_t)std::min(std::max(finalRGB.x * 255.0, 0.0), 255.0);
-        res[1] = (uint8_t)std::min(std::max(finalRGB.y * 255.0, 0.0), 255.0);
-        res[0] = (uint8_t)std::min(std::max(finalRGB.z * 255.0, 0.0), 255.0);
+        res[2] = static_cast<uint8_t>(finalRGB.x * 255.0);
+        res[1] = static_cast<uint8_t>(finalRGB.y * 255.0);
+        res[0] = static_cast<uint8_t>(finalRGB.z * 255.0);
         res[3] = 255;
+
         return res;
     }
 };
@@ -243,13 +254,19 @@ private:
     vec4 l;
 public:
     PhongShader(const vec3 light, const Model& m, const GlobalMat& gloMat) : model(m) {
-        l = normalized((gloMat.persp(vec4{ light.x, light.y, light.z, 0. })));
+        l = normalized(gloMat.rot(vec4{ light.x, light.y, light.z, 0.0 }, false));
     }
 
-    TGAColor color(triangle& tri, const vec3 bar, mat<4, 4>modelView_invert_transpose, mat<2, 4>&T) const {
+    TGAColor color(triangle& tri, const vec3 bar, mat<4, 4>modelView_invert_transpose,const mat<2, 4>&T) const {
         vec4 t0 = normalized(T[0]);
         vec4 t1 = normalized(T[1]);
         vec4 n_t = normalized((modelView_invert_transpose * tri.norm_gravity(bar[0], bar[1], bar[2])));
+
+        // ========== 新增 Gram‑Schmidt 正交化 ==========
+        t0 = normalized(t0 - (t0 * n_t) * n_t);
+        // t1：既要垂直 n_t，又要垂直已经修正后的 t0，再归一化
+        t1 = normalized(t1 - (t1 * n_t) * n_t - (t1 * t0) * t0);
+
         mat<4, 4>D = { t0,t1,n_t,{0,0,0,1} };
 
         vec2 uv = tri.uv_gravity(bar[0], bar[1], bar[2]);
@@ -278,10 +295,10 @@ private:
 public:
     ToonShader(TGAColor color, const vec3 light, const Model& m, const GlobalMat& gloMat) : model(m) {
         this->mColor = color;
-        l = normalized((gloMat.persp( vec4{ light.x, light.y, light.z, 0. }))); // transform the light vector to view coordinates
+        l = normalized(gloMat.rot(vec4{ light.x, light.y, light.z, 0.0 }, false));
     }
 
-    TGAColor color(triangle& tri, const vec3 bar, mat<4, 4>modelView_invert_transpose) const {
+    TGAColor color(triangle& tri, const vec3 bar) const {
         vec4 n = normalized(tri.norm_gravity(bar[0], bar[1], bar[2])); // per-vertex normal interpolation
         double diffuse = std::max(0., n * l);
         double intensity = .15 + diffuse;
@@ -331,7 +348,7 @@ public:
         this->InitSSAOSamples();
     }
     //目标，给我一张可知width和height的图片上的zbuffer_ture,以及当前像素我来看看需不需要遮挡
-    float AO(int width,int height,int px, int py, const vec3& pixel_nor, std::vector<double>& zbuffer_true,double z)const
+    float AO(int width,int height,int px, int py, const vec3& pixel_nor, const std::vector<double>& zbuffer_true,double z)const
     {
         float occlusion = 0.0f;
         for (int s = 0; s < mSSAO_SAMPLE_COUNT; s++)
@@ -419,7 +436,7 @@ void draw_shadow_zbuffer(triangle& tri,std::vector<double>& zbuffer_true, int wi
             if (inside) {
                 double z = (ndc[0].z * ce1 + ndc[1].z * ce2 + ndc[2].z * ce0) / (ce1 + ce2 + ce0);
                 int idx = bbminx + i + (bbminy + j) * width;
-                if (z >= zbuffer_true[idx])
+                if (z > zbuffer_true[idx])
                 {
                    
                     zbuffer_true[idx] = z;
@@ -433,7 +450,6 @@ void draw_shadow_zbuffer(triangle& tri,std::vector<double>& zbuffer_true, int wi
     }
 }
 //加载一次模型同时渲染toon和普通模型
-//我去我去ssao有问题，看我等会整理一下把它提到后处理
 //void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
 void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
 {
@@ -499,10 +515,12 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
                 {
                     //这里如果没有透视矫正模型由于不那么规律看不出来，但是地上的平面会很明显
                     double for_c = (double)ce0 / tri.dot[2].w;
-                    double for_a = (double)ce1/ tri.dot[0].w;
-                    double for_b = (double)ce2/ tri.dot[1].w;
+                    double for_a = (double)ce1 / tri.dot[0].w;
+                    double for_b = (double)ce2 / tri.dot[1].w;
                     vec3 bar = { for_a,for_b ,for_c };
-                    bar = bar / (for_a + for_b + for_c);
+                    double sum = for_a + for_b + for_c;
+                    if (sum < 1e-12) sum = 1e-12;
+                    bar = bar / sum;
 
                     vec4 raw_n4 = tri.norm_gravity(bar[0], bar[1], bar[2]);
                     vec3 pixel_nor = { raw_n4.x, raw_n4.y, raw_n4.z };
@@ -515,11 +533,11 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
                     color_more_real[1] = std::min(255, (int)(color_more_real[1] * ao));
                     color_more_real[2] = std::min(255, (int)(color_more_real[2] * ao));
 
-                    TGAColor color_more_real_toon = shader2.color(tri, bar, model_);
+                    TGAColor color_more_real_toon = shader2.color(tri, bar);
 
                     framebuffer.set(px, py, color_more_real);
                     framebuffer_toon.set(px, py, color_more_real_toon);
-                    zbuffer_true[idx] = z;
+                    //zbuffer_true[idx] = z;
                  }
             }
             ce0 += de0x;
@@ -551,16 +569,6 @@ void create_zbuffer_img(TGAImage& zbuffer_img, std::vector<double>& zbuffer_true
 }
 void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbuffer_img, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<double>& zbuffer_true_shadow,const RenderSettings& setting)
 {
-    // 1. 加载 HDR 并创建 Cubemap
-    HDRImage hdr;
-    hdr.load("HDR/lebombo_1k.hdr");
-
-    Cubemap irradiance(64);
-    irradiance.fromHDR(hdr); // 环境光贴图
-
-    Cubemap prefilter(64);
-    prefilter.generatePrefilter(irradiance,3); // 反射贴图
-
     SSAOShader ssaoShader(10.0f, 0.005f, 16);
     GlobalMat glomat;
     glomat.modelview(setting.eye, setting.center, setting.up);
@@ -574,8 +582,8 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
         setting.light_vec,
         model,
         glomat,
-        &irradiance,
-        &prefilter
+        &setting.irradiance,
+        &setting.prefilter
     );
     ToonShader toonShader(orange, setting.light_vec, model,glomat);
     //我们需要提前zbuffer让SSAO可以正确计算AO系数
@@ -589,7 +597,6 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
     for (int i = 0; i < model.nfaces(); i++)
     {
         triangle tri(model, i,glomat,false);
-        //draw_triangle_color(tri,shader,ssaoShader,framebuffer,zbuffer_true,width_obj,height_obj);
         draw_both_together(tri, shader, toonShader, ssaoShader, framebuffer, framebuffer_toon, zbuffer_true, width_obj, height_obj,modelview_invert_transpose,glomat);
     }
     create_zbuffer_img(zbuffer_img, zbuffer_true, width_obj, height_obj);
@@ -608,15 +615,29 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
     std::vector<bool> mask(width_obj * height_obj, false);
     for (int x = 0; x < width_obj; x++) {
         for (int y = 0; y < height_obj; y++) {
-            vec4 fragment = M * vec4{ (double)x, (double)y, zbuffer_true[x + y * width_obj], 1. };
+            int idx_zbuffer = x + y * width_obj;
+            vec4 fragment = M * vec4{ (double)x, (double)y, zbuffer_true[idx_zbuffer], 1. };
             vec4 q = N * fragment;
             vec3 p = q.xyz() / q.w;
-            bool lit = (fragment.z < -100 ||                                   // it's the background or
-                (p.x < 0 || p.x >= width_obj || p.y < 0 || p.y >= height_obj) ||   // it is out of bounds of the shadow buffer
-                (p.z > zbuffer_true_shadow[int(p.x) + int(p.y) * height_obj] - .03));  // it is visible
-            mask[x + y * width_obj] = lit;
+            bool lit;
+            if (fragment.z < -100)
+            {
+                lit = true;
+            }
+            else if (p.x < 0.0 || p.x >= width_obj || p.y < 0.0 || p.y >= height_obj)
+            {
+                lit = false; //正交面光，超出shadowmap视为阴影
+            }
+            else
+            {
+                int sx = static_cast<int>(p.x);
+                int sy = static_cast<int>(p.y);
+                lit = (p.z > zbuffer_true_shadow[sx + sy * width_obj] - 0.03);
+            }
+            mask[idx_zbuffer] = lit;
         }
     }
+    
     //基于mask正式上色
     for (int x = 0; x < width_obj; x++) {
         for (int y = 0; y < height_obj; y++) {
@@ -638,10 +659,11 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
             vec2 sum;
             for (int j = -1; j <= 1; ++j) {
                 for (int i = -1; i <= 1; ++i) {
-
+                    int idx_zbuffer = (x + i) + (y + j) * width_obj;
                     sum = sum + vec2{
-                        Gx[j + 1][i + 1] * zbuffer_true[x + i + (y + j) * width_obj],
-                        Gy[j + 1][i + 1] * zbuffer_true[x + i + (y + j) * width_obj]
+                         
+                        Gx[j + 1][i + 1] * zbuffer_true[idx_zbuffer],
+                        Gy[j + 1][i + 1] * zbuffer_true[idx_zbuffer]
                     };
                 }
             }

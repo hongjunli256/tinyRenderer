@@ -106,7 +106,6 @@ static GLuint texture_from_tga(const TGAImage& img) {
     }
     return tex;
 }
-
 int main() {
     std::list<Model>models;
     models.emplace_back("obj/diablo3_pose.obj");
