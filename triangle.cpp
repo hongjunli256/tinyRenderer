@@ -142,9 +142,6 @@ public:
     }
 
     TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& modelView_invert_transpose,mat<2,4>&T) const {
-        //mat<2, 4> E = { tri.dot[1] - tri.dot[0], tri.dot[2] - tri.dot[0] };
-        //mat<2, 2> U = { tri.uv[1] - tri.uv[0], tri.uv[2] - tri.uv[0] };
-        //mat<2, 4> T = U.invert() * E;
 
         vec4 t0 = normalized(T[0]);
         vec4 t1 = normalized(T[1]);
@@ -436,6 +433,7 @@ void draw_shadow_zbuffer(triangle& tri,std::vector<double>& zbuffer_true, int wi
     }
 }
 //加载一次模型同时渲染toon和普通模型
+//我去我去ssao有问题，看我等会整理一下把它提到后处理
 //void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
 void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
 {
