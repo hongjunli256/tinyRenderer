@@ -92,7 +92,12 @@ public:
 private:
 
 };
-struct PBRShader {
+class MyShader {
+public:
+    virtual TGAColor color(triangle& tri, const vec3& bar, const mat<4, 4>& modelView_invert_transpose, const mat<2, 4>& T)const = 0;
+    virtual ~MyShader() = default; // 虚析构，多态delete安全
+};
+class PBRShader :public MyShader{
 private:
     const Model& model;
     vec4 l; // 视图空间光源方向
@@ -143,8 +148,7 @@ public:
         // light:世界空间方向，旋转到视图空间
         l = normalized(gloMat.rot(vec4{ light.x, light.y, light.z, 0.0 }, false));
     }
-
-    TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& modelView_invert_transpose,const mat<2, 4>& T) const
+    TGAColor color(triangle& tri, const vec3& bar, const mat<4, 4>& modelView_invert_transpose,const mat<2, 4>& T) const
     {
 
         vec4 t0 = normalized(T[0]);
@@ -248,7 +252,7 @@ public:
     }
 };
 
-struct PhongShader {
+struct PhongShader : public MyShader {
 private:
     const Model& model;
     vec4 l;
@@ -256,8 +260,7 @@ public:
     PhongShader(const vec3 light, const Model& m, const GlobalMat& gloMat) : model(m) {
         l = normalized(gloMat.rot(vec4{ light.x, light.y, light.z, 0.0 }, false));
     }
-
-    TGAColor color(triangle& tri, const vec3 bar, mat<4, 4>modelView_invert_transpose,const mat<2, 4>&T) const {
+    TGAColor color(triangle& tri, const vec3& bar, const mat<4, 4>& modelView_invert_transpose, const mat<2, 4>& T) const{
         vec4 t0 = normalized(T[0]);
         vec4 t1 = normalized(T[1]);
         vec4 n_t = normalized((modelView_invert_transpose * tri.norm_gravity(bar[0], bar[1], bar[2])));
@@ -287,7 +290,7 @@ public:
     }
 };
 
-class ToonShader{
+class ToonShader :public MyShader {
 private:
     TGAColor mColor;
     const Model& model;
@@ -298,7 +301,7 @@ public:
         l = normalized(gloMat.rot(vec4{ light.x, light.y, light.z, 0.0 }, false));
     }
 
-    TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& model_inv_tp) const {
+    TGAColor color(triangle& tri, const vec3& bar, const mat<4, 4>& model_inv_tp, const mat<2, 4>& T) const {
         vec4 raw_n = tri.norm_gravity(bar[0], bar[1], bar[2]);
         vec4 n_view = normalized(model_inv_tp * raw_n);
         double diffuse = std::max(0., n_view * l);
@@ -537,8 +540,8 @@ void draw_shadow_zbuffer(triangle& tri,std::vector<double>& zbuffer_true, int wi
     }
 }
 //加载一次模型同时渲染toon和普通模型
-void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonShader& shader2, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<vec3>& norm_buf, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
-//void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
+//void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonShader& shader2, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<vec3>& norm_buf, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
+void draw_both_together(triangle& tri, const MyShader& shader1, const MyShader& shader2, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<vec3>& norm_buf, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
 {
 
     vec4 ndc[3] = { tri.dot[0] / tri.dot[0].w, tri.dot[1] / tri.dot[1].w, tri.dot[2] / tri.dot[2].w };
@@ -583,7 +586,7 @@ void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonSha
     mat<2, 4> E = { tri.dot[1] - tri.dot[0], tri.dot[2] - tri.dot[0] };
     mat<2, 2> U = { tri.uv[1] - tri.uv[0], tri.uv[2] - tri.uv[0] };
     mat<2, 4> T = U.invert() * E;
-//#pragma omp parallel for private(ce0, ce1, ce2)
+#pragma omp parallel for private(ce0, ce1, ce2)
     for (int j = 0; j < h; j++) {
         int ce0 = e0 + de0y * j;
         int ce1 = e1 + de1y * j;
@@ -615,7 +618,7 @@ void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonSha
                     norm_buf[idx] = pixel_nor;
 
                     TGAColor color_more_real = shader1.color(tri, bar, model_, T);
-                    TGAColor color_more_real_toon = shader2.color(tri, bar,model_);
+                    TGAColor color_more_real_toon = shader2.color(tri, bar,model_,T);
 
                     framebuffer.set(px, py, color_more_real);
                     framebuffer_toon.set(px, py, color_more_real_toon);
@@ -659,24 +662,20 @@ void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbu
     glomat.perspective(norm(setting.eye - setting.center));
     glomat.viewport(width_obj/16, height_obj/16, width_obj*7/8, height_obj*7/8);
     mat<4, 4> modelview_invert_transpose = glomat.modelview_invert_transpose();
-    
-    PhongShader shader(setting.light_vec,model,glomat);
-    //PBRShader shader(
-    //    setting.light_vec,
-    //    model,
-    //    glomat,
-    //    &setting.irradiance,
-    //    &setting.prefilter
-    //);
-    ToonShader toonShader(orange, setting.light_vec, model,glomat);
-    //我们需要提前zbuffer让SSAO可以正确计算AO系数
-    //for (int i = 0; i < model.nfaces(); i++)
-    //{
-    //    triangle tri(model, i,glomat,false);
-    //    draw_shadow_zbuffer(tri, zbuffer_true, width_obj, height_obj,glomat);
-    //    
-    //}
-    //正式渲染整个模型(基础颜色与SSAO)
+    //三shader
+    PhongShader shader_phong(setting.light_vec,model,glomat);
+    PBRShader shader_pbr(
+        setting.light_vec,
+        model,
+        glomat,
+        &setting.irradiance,
+        &setting.prefilter
+    );
+    ToonShader shader_toon(orange, setting.light_vec, model,glomat);
+    //多态哈哈
+    MyShader& shader = shader_phong;
+    MyShader& toonShader = shader_toon;
+
     for (int i = 0; i < model.nfaces(); i++)
     {
         triangle tri(model, i,glomat,false);

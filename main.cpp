@@ -112,10 +112,10 @@ static GLuint texture_from_tga(const TGAImage& img) {
 }
 int main() {
     std::list<Model>models;
-    //models.emplace_back("obj/diablo3_pose.obj");
-    //models.emplace_back("obj/floor.obj");
-    models.emplace_back("obj/african_head_eye_inner.obj");
-    models.emplace_back("obj/african_head.obj");
+    models.emplace_back("obj/diablo3_pose.obj");
+    models.emplace_back("obj/floor.obj");
+    //models.emplace_back("obj/african_head_eye_inner.obj");
+    //models.emplace_back("obj/african_head.obj");
 
     glfwInit();
     GLFWwindow* window = glfwCreateWindow(1600, 900, "SoftRenderer Viewer", nullptr, nullptr);
