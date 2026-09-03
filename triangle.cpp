@@ -298,9 +298,10 @@ public:
         l = normalized(gloMat.rot(vec4{ light.x, light.y, light.z, 0.0 }, false));
     }
 
-    TGAColor color(triangle& tri, const vec3 bar) const {
-        vec4 n = normalized(tri.norm_gravity(bar[0], bar[1], bar[2])); // per-vertex normal interpolation
-        double diffuse = std::max(0., n * l);
+    TGAColor color(triangle& tri, const vec3 bar, const mat<4, 4>& model_inv_tp) const {
+        vec4 raw_n = tri.norm_gravity(bar[0], bar[1], bar[2]);
+        vec4 n_view = normalized(model_inv_tp * raw_n);
+        double diffuse = std::max(0., n_view * l);
         double intensity = .15 + diffuse;
         if (intensity > .66) intensity = 1;
         else if (intensity > .33) intensity = .66;
@@ -309,71 +310,156 @@ public:
         TGAColor gl_FragColor;
         for (int channel : {0, 1, 2})
             gl_FragColor[channel] = std::min<int>(255, mColor[channel] * intensity);
-        return gl_FragColor;                           
+        return gl_FragColor;
     }
 };
 
 class SSAOShader {
-    float mSSAO_RADIUS = 10.0f;
-    float mSSAO_BIAS = 0.005f;
-    int mSSAO_SAMPLE_COUNT=16;
+    float mSSAO_RADIUS = 1.0f;     // !!!现在是view空间物理半径，不再是像素
+    float mSSAO_BIAS = 0.02f;      // view‑space物理bias，米单位
+    int mSSAO_SAMPLE_COUNT = 16;
     std::vector<vec3> g_ssao_samples;
+
+    mat<4,4> m_proj;
+    mat<4,4> m_invProj;
+    bool m_hasProj = false;
+
+    static float fractf(float v) { return v - floorf(v); }
+    static float hash(float x, float y)
+    {
+        return fractf(sin(x * 12.9898f + y * 78.233f) * 43758.5453f);
+    }
 
     void InitSSAOSamples()
     {
         srand(12345);
+        g_ssao_samples.clear();
         for (int i = 0; i < mSSAO_SAMPLE_COUNT; i++)
         {
-            // 随机方向 x(-1~1) y(-1~1) z(0~1) → 上半球
             float x = (rand() % 1000) / 500.0f - 1.0f;
             float y = (rand() % 1000) / 500.0f - 1.0f;
             float z = (rand() % 1000) / 1000.0f;
 
-            // 归一化 = 变成单位向量
             float len = sqrt(x * x + y * y + z * z);
             x /= len; y /= len; z /= len;
 
-            // 越靠近中心采样越密 → 效果更自然
-            float scale = (float)i / 16.0f;
+            float scale = (float)i / (float)mSSAO_SAMPLE_COUNT;
             scale *= scale;
-            g_ssao_samples.push_back ({ x * scale, y * scale, z * scale });
+            g_ssao_samples.push_back({ x * scale, y * scale, z * scale });
         }
     }
+
+    // px,py:屏幕像素; width,height:分辨率; ndc_z:[-1,1] 输出view空间位置
+    vec3 ndcToView(int px, int py, int width, int height, double ndc_z) const
+    {
+        float nx = 2.0f * float(px) / float(width) - 1.0f;
+        float ny = 1.0f - 2.0f * float(py) / float(height);
+        vec4 ndc{ nx, ny, (float)ndc_z, 1.0f };
+        vec4 clip = m_invProj * ndc;
+        float invW = 1.0f / clip.w;
+        return { clip.x * invW, clip.y * invW, clip.z * invW };
+    }
+
+    // view空间点投影回屏幕像素
+    bool viewToNdc(const vec3& viewPt, int width, int height, int& outPx, int& outPy) const
+    {
+        vec4 clip = m_proj * vec4{ viewPt.x,viewPt.y,viewPt.z,1.0f };
+        if (fabs(clip.w) < 1e-6f) return false;
+        float invW = 1.0f / clip.w;
+        float nx = clip.x * invW;
+        float ny = clip.y * invW;
+        if (nx < -1.0f || nx > 1.0f || ny < -1.0f || ny > 1.0f)
+            return false;
+
+        outPx = int(((nx + 1.0f) * 0.5f) * float(width));
+        outPy = int(((1.0f - ny) * 0.5f) * float(height));
+        return true;
+    }
+
 private:
 public:
-    SSAOShader(float SSAO_RADIUS,float SSAO_BIAS, int SSAO_SAMPLE_COUNT)  {
+    SSAOShader(float SSAO_RADIUS, float SSAO_BIAS, int SSAO_SAMPLE_COUNT)
+    {
         mSSAO_RADIUS = SSAO_RADIUS;
         mSSAO_BIAS = SSAO_BIAS;
-        mSSAO_SAMPLE_COUNT=SSAO_SAMPLE_COUNT;
-        this->InitSSAOSamples();
+        mSSAO_SAMPLE_COUNT = SSAO_SAMPLE_COUNT;
+        InitSSAOSamples();
     }
-    //目标，给我一张可知width和height的图片上的zbuffer_ture,以及当前像素我来看看需不需要遮挡
-    float AO(int width,int height,int px, int py, const vec3& pixel_nor, const std::vector<double>& zbuffer_true,double z)const
+
+    // 每一帧设置投影矩阵，必须调用！
+    void SetProjection(const mat<4,4>& proj, const mat<4,4>& invProj)
     {
+        m_proj = proj;
+        m_invProj = invProj;
+        m_hasProj = true;
+    }
+
+    // AO对外接口完全不变！
+    double AO(int width, int height, int px, int py, const vec3& pixel_nor, const std::vector<double>& zbuffer_true, double z)const
+    {
+        if (!m_hasProj) return 1.0;
+
+        // 当前像素：NDC → view空间位置
+        vec3 viewPos = ndcToView(px, py, width, height, z);
+
+        // 像素随机旋转扰动
+        float rnd = hash((float)px, (float)py);
+        float rotAngle = rnd * 2.0f * (float)M_PI;
+        float rotCos = cosf(rotAngle);
+        float rotSin = sinf(rotAngle);
+
         float occlusion = 0.0f;
+
         for (int s = 0; s < mSSAO_SAMPLE_COUNT; s++)
         {
             vec3 sample_dir = g_ssao_samples[s];
+
+            // 样本在切线平面旋转
+            float rx = sample_dir.x * rotCos - sample_dir.y * rotSin;
+            float ry = sample_dir.x * rotSin + sample_dir.y * rotCos;
+            sample_dir.x = rx;
+            sample_dir.y = ry;
+
             // 翻转到法线半球
-            if (sample_dir * pixel_nor < 0)
+            if (sample_dir* pixel_nor< 0.0f)
+            {
                 sample_dir = { -sample_dir.x, -sample_dir.y, -sample_dir.z };
+            }
 
-            // 屏幕邻域偏移采样(软渲染极简适配，复用屏幕空间，暂时跳过世界重算哈哈我先提升一下效率再说)
-            int off_x = (int)(sample_dir.x * mSSAO_RADIUS);
-            int off_y = (int)(sample_dir.y * mSSAO_RADIUS);
-            int spx = px + off_x;
-            int spy = py + off_y;
+            // view‑space采样点：物理半径偏移
+            vec3 sampleViewPos = viewPos + sample_dir * mSSAO_RADIUS;
 
-            // 边界裁剪
-            if (spx < 0 || spx >= width || spy < 0 || spy >= height) continue;
+            // 投影回屏幕，得到采样像素坐标
+            int spx, spy;
+            if (!viewToNdc(sampleViewPos, width, height, spx, spy))
+                continue;
+            if (spx < 0 || spx >= width || spy < 0 || spy >= height)
+                continue;
 
-            // 直接读深度缓冲(你现成全局zbuffer)
-            float sample_z = zbuffer_true[spx + spy * width];
-            // 深度比对遮挡
-            if ((sample_z - z) > mSSAO_BIAS)
-                occlusion += 1.0f;
+            int idx_sp = spx + spy * width;
+            double sampleNdcZ = zbuffer_true[idx_sp];
+            if (sampleNdcZ < -100.0)
+                continue;
+
+            // 采样点NDC再次反算得到采样点viewPos
+            vec3 sampleViewReal = ndcToView(spx, spy, width, height, sampleNdcZ);
+
+            // 真实view空间深度差
+            float deltaViewZ = sampleViewReal.z - viewPos.z;
+
+            // 平滑权重，物理bias，不再和NDC耦合
+            float weight = std::clamp((deltaViewZ - mSSAO_BIAS) / (mSSAO_RADIUS * 0.25f), 0.0f, 1.0f);
+
+            // 三维空间距离衰减
+            vec3 diff = sampleViewReal - viewPos;
+            float distSq = diff*diff;
+            float falloff = 1.0f / (1.0f + distSq);
+
+            occlusion += weight * falloff;
         }
-        float ao = 1.0f - (occlusion / (float)mSSAO_SAMPLE_COUNT);
+
+        double avgOcc = occlusion / (double)mSSAO_SAMPLE_COUNT;
+        double ao = 1.0 - std::clamp(avgOcc * 1.3, 0.0, 1.0);
         return ao;
     }
 };
@@ -434,13 +520,14 @@ void draw_shadow_zbuffer(triangle& tri,std::vector<double>& zbuffer_true, int wi
                 (ce0 <= 0 && ce1 <= 0 && ce2 <= 0);
 
             if (inside) {
+                double denom = ce1 + ce2 + ce0;
+                if (std::fabs(denom) < 1e-12)
+                    continue;
                 double z = (ndc[0].z * ce1 + ndc[1].z * ce2 + ndc[2].z * ce0) / (ce1 + ce2 + ce0);
                 int idx = bbminx + i + (bbminy + j) * width;
                 if (z > zbuffer_true[idx])
                 {
-                   
                     zbuffer_true[idx] = z;
-
                 }
             }
             ce0 += de0x;
@@ -450,8 +537,8 @@ void draw_shadow_zbuffer(triangle& tri,std::vector<double>& zbuffer_true, int wi
     }
 }
 //加载一次模型同时渲染toon和普通模型
-//void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
-void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
+void draw_both_together(triangle& tri, const PhongShader& shader1, const ToonShader& shader2, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<vec3>& norm_buf, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
+//void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShader& shader2, const SSAOShader& ssaoShader, TGAImage& framebuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, int width, int height, mat<4, 4>& model_, const GlobalMat& gloMat)
 {
 
     vec4 ndc[3] = { tri.dot[0] / tri.dot[0].w, tri.dot[1] / tri.dot[1].w, tri.dot[2] / tri.dot[2].w };
@@ -496,7 +583,7 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
     mat<2, 4> E = { tri.dot[1] - tri.dot[0], tri.dot[2] - tri.dot[0] };
     mat<2, 2> U = { tri.uv[1] - tri.uv[0], tri.uv[2] - tri.uv[0] };
     mat<2, 4> T = U.invert() * E;
-#pragma omp parallel for private(ce0, ce1, ce2)
+//#pragma omp parallel for private(ce0, ce1, ce2)
     for (int j = 0; j < h; j++) {
         int ce0 = e0 + de0y * j;
         int ce1 = e1 + de1y * j;
@@ -514,30 +601,26 @@ void draw_both_together(triangle& tri, const PBRShader& shader1, const ToonShade
                 if (z >= zbuffer_true[idx])
                 {
                     //这里如果没有透视矫正模型由于不那么规律看不出来，但是地上的平面会很明显
-                    double for_c = (double)ce0 / tri.dot[2].w;
                     double for_a = (double)ce1 / tri.dot[0].w;
                     double for_b = (double)ce2 / tri.dot[1].w;
+                    double for_c = (double)ce0 / tri.dot[2].w;
                     vec3 bar = { for_a,for_b ,for_c };
                     double sum = for_a + for_b + for_c;
                     if (sum < 1e-12) sum = 1e-12;
                     bar = bar / sum;
 
                     vec4 raw_n4 = tri.norm_gravity(bar[0], bar[1], bar[2]);
-                    vec3 pixel_nor = { raw_n4.x, raw_n4.y, raw_n4.z };
-                    pixel_nor = normalized(pixel_nor);
+                    vec4 view_n4 = normalized(model_ * raw_n4);
+                    vec3 pixel_nor = { view_n4.x, view_n4.y, view_n4.z };
+                    norm_buf[idx] = pixel_nor;
 
-                    TGAColor color_more_real = shader1.color(tri, bar, model_,T);
-
-                    float ao = ssaoShader.AO(width, height, px, py, pixel_nor, zbuffer_true, z);
-                    color_more_real[0] = std::min(255, (int)(color_more_real[0] * ao));
-                    color_more_real[1] = std::min(255, (int)(color_more_real[1] * ao));
-                    color_more_real[2] = std::min(255, (int)(color_more_real[2] * ao));
-
-                    TGAColor color_more_real_toon = shader2.color(tri, bar);
+                    TGAColor color_more_real = shader1.color(tri, bar, model_, T);
+                    TGAColor color_more_real_toon = shader2.color(tri, bar,model_);
 
                     framebuffer.set(px, py, color_more_real);
                     framebuffer_toon.set(px, py, color_more_real_toon);
-                    //zbuffer_true[idx] = z;
+                    zbuffer_true[idx] = z;
+                   
                  }
             }
             ce0 += de0x;
@@ -567,37 +650,58 @@ void create_zbuffer_img(TGAImage& zbuffer_img, std::vector<double>& zbuffer_true
         }
     }
 }
-void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbuffer_img, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<double>& zbuffer_true_shadow,const RenderSettings& setting)
+void build_obj_triangle(const Model &model, TGAImage& framebuffer, TGAImage& zbuffer_img, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<double>& zbuffer_true_shadow, std::vector<vec3>& norm_buf,const RenderSettings& setting)
 {
-    SSAOShader ssaoShader(10.0f, 0.005f, 16);
+
     GlobalMat glomat;
     glomat.modelview(setting.eye, setting.center, setting.up);
     glomat.modelviewforLight(setting.light_vec, setting.center, setting.up);
     glomat.perspective(norm(setting.eye - setting.center));
     glomat.viewport(width_obj/16, height_obj/16, width_obj*7/8, height_obj*7/8);
-    mat<4, 4> modelview_invert_transpose = glomat.modelview_invert_transpose();//ModelView.invert_transpose();
+    mat<4, 4> modelview_invert_transpose = glomat.modelview_invert_transpose();
     
-    //PhongShader shader(setting.light_vec,model,glomat);
-    PBRShader shader(
-        setting.light_vec,
-        model,
-        glomat,
-        &setting.irradiance,
-        &setting.prefilter
-    );
+    PhongShader shader(setting.light_vec,model,glomat);
+    //PBRShader shader(
+    //    setting.light_vec,
+    //    model,
+    //    glomat,
+    //    &setting.irradiance,
+    //    &setting.prefilter
+    //);
     ToonShader toonShader(orange, setting.light_vec, model,glomat);
     //我们需要提前zbuffer让SSAO可以正确计算AO系数
-    for (int i = 0; i < model.nfaces(); i++)
-    {
-        triangle tri(model, i,glomat,false);
-        draw_shadow_zbuffer(tri, zbuffer_true, width_obj, height_obj,glomat);
-        
-    }
+    //for (int i = 0; i < model.nfaces(); i++)
+    //{
+    //    triangle tri(model, i,glomat,false);
+    //    draw_shadow_zbuffer(tri, zbuffer_true, width_obj, height_obj,glomat);
+    //    
+    //}
     //正式渲染整个模型(基础颜色与SSAO)
     for (int i = 0; i < model.nfaces(); i++)
     {
         triangle tri(model, i,glomat,false);
-        draw_both_together(tri, shader, toonShader, ssaoShader, framebuffer, framebuffer_toon, zbuffer_true, width_obj, height_obj,modelview_invert_transpose,glomat);
+        draw_both_together(tri, shader, toonShader, framebuffer, framebuffer_toon, zbuffer_true, norm_buf,width_obj, height_obj,modelview_invert_transpose,glomat);
+    }
+
+    SSAOShader ssaoShader(10.0f, 0.005f, 16);
+#pragma omp parallel for
+    for (int py = 0; py < height_obj; py++)
+    {
+        for (int px = 0; px < width_obj; px++)
+        {
+            int idx = px + py * width_obj;
+            double z_val = zbuffer_true[idx];
+            if (z_val < -100.0) continue;
+
+            const vec3& n = norm_buf[idx];
+            float ao = ssaoShader.AO(width_obj, height_obj, px, py, n, zbuffer_true, z_val);
+
+            TGAColor c = framebuffer.get(px, py);
+            c[0] = static_cast<uint8_t>(std::clamp((float)c[0] * ao, 0.0f, 255.0f));
+            c[1] = static_cast<uint8_t>(std::clamp((float)c[1] * ao, 0.0f, 255.0f));
+            c[2] = static_cast<uint8_t>(std::clamp((float)c[2] * ao, 0.0f, 255.0f));
+            framebuffer.set(px, py, c);
+        }
     }
     create_zbuffer_img(zbuffer_img, zbuffer_true, width_obj, height_obj);
     

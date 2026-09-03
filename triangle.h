@@ -3,9 +3,6 @@
 #include "cubemap.h"
 constexpr int width_obj = 800;
 constexpr int height_obj = 800;
-//const double PI = 3.1415926535;
-//constexpr int width_obj_shadow = 2048;
-//constexpr int height_obj_shadow = 2048;
 
 constexpr TGAColor white = { 255, 255, 255, 255 }; // attention, BGRA order
 constexpr TGAColor green = { 0, 255,   0, 255 };
@@ -45,8 +42,7 @@ public:
     Cubemap irradiance{ 64 };
     Cubemap prefilter{ 64 };
 };
-void build_obj_triangle(const Model&model, TGAImage& framebuffer, TGAImage& zbuffer, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<double>& zbuffer_true_shadow, const RenderSettings &setting);
-
+void build_obj_triangle(const Model& model, TGAImage& framebuffer, TGAImage& zbuffer_img, TGAImage& framebuffer_toon, std::vector<double>& zbuffer_true, std::vector<double>& zbuffer_true_shadow, std::vector<vec3>& norm_buf, const RenderSettings& setting);
 
 
 ////划线第三代，基于第二代进行性能优化,把浮点数运算替换为整数运算

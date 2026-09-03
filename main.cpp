@@ -27,6 +27,7 @@ struct RenderOutput {
     TGAImage zbuf;
     std::vector<double> ztrue;
     std::vector<double> zshadow;
+    std::vector<vec3> norm_buf;//为了ssao服务
     GLuint tex_color = 0, tex_toon = 0, tex_zbuf = 0; // 缓存纹理
 
     RenderOutput(int w, int h)
@@ -35,7 +36,8 @@ struct RenderOutput {
         zbuf(w, h, 1, { 0,0,0,0 })
     {
         ztrue.assign(w * h, -511.0);
-        zshadow.assign(width_obj * height_obj, -511.0);
+        zshadow.assign(w * h, -511.0);
+        norm_buf.assign(w * h, vec3{ 0,0,0 });
     }
 
     // 清理纹理
@@ -48,16 +50,17 @@ struct RenderOutput {
 
 // 渲染函数（传入相机 & 光线）
 void render_scene(const RenderSettings& s,std::list<Model>&models, RenderOutput& out) {
-    // 清空深度缓冲（两个都清！）
+    //清空缓存
     std::fill(out.ztrue.begin(), out.ztrue.end(), -511.0);
     std::fill(out.zshadow.begin(), out.zshadow.end(), -511.0);
+    std::fill(out.norm_buf.begin(), out.norm_buf.end(), vec3{0,0,0});
     out.color.clear({ 177,195,205,255 });
     out.toon.clear({ 255,255,255,255 });
     out.zbuf.clear({ 0,0,0,0 });
-    for (const Model& model : models) // 加 & 变成引用，0拷贝
+    for (const Model& model : models)
 
     {
-        build_obj_triangle(model, out.color, out.zbuf, out.toon, out.ztrue, out.zshadow,s);
+        build_obj_triangle(model, out.color, out.zbuf, out.toon, out.ztrue, out.zshadow,out.norm_buf,s);
     }
 }
 
@@ -67,6 +70,7 @@ static GLuint texture_from_tga(const TGAImage& img) {
 
     int w = img.width();
     int h = img.height();
+    if (w <= 0 || h <= 0) return 0;
     int bpp = img.get_bpp();
     const uint8_t* data = img.get_data().data();
 
@@ -108,13 +112,18 @@ static GLuint texture_from_tga(const TGAImage& img) {
 }
 int main() {
     std::list<Model>models;
-    models.emplace_back("obj/diablo3_pose.obj");
-    models.emplace_back("obj/floor.obj");
-    //models.emplace_back("obj/african_head_eye_inner.obj");
-    //models.emplace_back("obj/african_head.obj");
+    //models.emplace_back("obj/diablo3_pose.obj");
+    //models.emplace_back("obj/floor.obj");
+    models.emplace_back("obj/african_head_eye_inner.obj");
+    models.emplace_back("obj/african_head.obj");
 
     glfwInit();
     GLFWwindow* window = glfwCreateWindow(1600, 900, "SoftRenderer Viewer", nullptr, nullptr);
+    if (!window)
+    {
+        glfwTerminate();
+        return -1;
+    }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -178,10 +187,10 @@ int main() {
         ImGui::Separator();
 
         // ImGui 显示
-        ImGui::Image((ImTextureID)(intptr_t)output.tex_color, ImVec2(400, 400));
+        ImGui::Image((ImTextureID)(uint64_t)output.tex_color, ImVec2(400, 400));
         ImGui::SameLine();
-        ImGui::Image((ImTextureID)(intptr_t)output.tex_toon, ImVec2(400, 400));
-        ImGui::Image((ImTextureID)(intptr_t)output.tex_zbuf, ImVec2(400, 400));
+        ImGui::Image((ImTextureID)(uint64_t)output.tex_toon, ImVec2(400, 400));
+        ImGui::Image((ImTextureID)(uint64_t)output.tex_zbuf, ImVec2(400, 400));
 
         ImGui::End();
         ImGui::Render();
